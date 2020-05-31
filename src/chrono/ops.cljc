@@ -1,5 +1,6 @@
 (ns chrono.ops
-  (:require [chrono.util :as u]))
+  (:require [chrono.tz :as tz]
+            [chrono.util :as u]))
 
 (defn gen-norm [k k-next del m]
   (fn [x]
@@ -67,12 +68,13 @@
         with-custom (apply conj (custom-units t) init)]
     (conj with-custom :day)))
 
-(defn normalize [t]
-  (let [rules (ordered-rules t)
-        normalized-time (reduce (fn [t unit] (normalize-rule unit t)) t rules)]
-    (into {}
-          (remove (comp zero? val))
-          normalized-time)))
+(defn normalize [{ttz :tz :as t}]
+  (let [utc-t (if ttz (tz/to-utc t) t)]
+    (cond->> utc-t
+      :always ordered-rules
+      :always (reduce (fn [t unit] (normalize-rule unit t)) utc-t)
+      :always (into {} (remove (comp zero? val)))
+      ttz (fn [t] (tz/to-tz t ttz)))))
 
 (defn- after? [t t']
   (loop [[[p s] & ps] defaults-units]

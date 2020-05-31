@@ -21,6 +21,12 @@
   (is (= [2012 1 1] (sut/days-and-months 2013 1 -365)))
   )
 
+(deftest tz-normalize-test
+  (matcho/match {:year 2018 :month 5 :day 2 :hour 14 :tz :ny}
+                (sut/normalize {:year 2018 :month 5 :day 2 :hour 14 :tz :ny}))
+  (matcho/match {:year 2018 :month 5 :day 3 :hour 1 :tz :ny}
+                (sut/normalize {:year 2018 :month 5 :day 2 :hour 25 :tz :ny})))
+
 (deftest comparsion-operators-test
   (testing "="
     (is (sut/eq? {:year 2011 :month 1 :day 1 :hour 0}))
@@ -242,23 +248,23 @@
     (matcho/match
      (sut/plus {:year 2019, :month 12, :day 10, :hour 13, :min 17, :sec 50, :ms 911} {:hour 2})
      {:year 2019, :month 12, :day 10, :hour 15, :min 17, :sec 50, :ms 911})
-    
+
     (testing "with custom units"
      (def normalize-ns (sut/gen-norm :ns :ms 1000000 0))
      (defmethod sut/normalize-rule :ns [_ t] (normalize-ns t))
-    
+
      (matcho/match
       (sut/plus {:ns 10} {:ns 1})
       {:ns 11})
-      
+
      (matcho/match
       (sut/plus {:ns 999999999} {:ns 1})
       {:sec 1})
-      
+
      (matcho/match
       (sut/plus {:ns 9999999} {:ns 999000001})
       {:sec 1 :ms 9})
-      
+
      (matcho/match
       (sut/plus {:year 2019 :month 12 :day 31 :hour 23 :min 59 :sec 59 :ns 999999999} {:ns 1})
       {:year 2020 :month 1 :day 1})))

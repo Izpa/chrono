@@ -85,7 +85,6 @@
         y (- y (quot m 10))]
     (+ (*ddd y) (*mmm m) (dec d))))
 
-
 (defn d [g]
   (let [y (-> (* 10000 g)
               (+ 14780)
