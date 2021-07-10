@@ -67,28 +67,29 @@
         with-custom (apply conj (custom-units t) init)]
     (conj with-custom :day)))
 
+(defmulti to-utc (fn [{:keys [tz]}] (type tz)))
+(defmulti to-tz "[t tz]" (fn [_ tz] (type tz)))
+
 (defn normalize [t]
-  (let [rules (ordered-rules t)
-        normalized-time (reduce (fn [t unit] (normalize-rule unit t)) t rules)]
-    (into {}
-          (remove (comp zero? val))
-          normalized-time)))
+  (let [tz              (:tz t)
+        rules           (ordered-rules t)
+        normalized-time (reduce (fn [t unit] (normalize-rule unit t)) (to-utc t) rules)]
+    (to-tz (into {}
+                 (remove (comp zero? val))
+                 normalized-time)
+           tz)))
 
-(defn- after? [t t']
-  (loop [[[p s] & ps] defaults-units]
-    (let [tp (get t p s) tp' (get t' p s)]
-      (cond
-        (> tp tp') true
-        (= tp tp') (and (seq ps) (recur ps))
-        :else false))))
-
-(def ^{:private true} default-time {:year 0 :month 1 :day 1 :hour 0 :min 0 :sec 0 :ms 0})
+(def ^:private default-time {:year 0 :month 1 :day 1 :hour 0 :min 0 :sec 0 :ms 0})
 
 (defn- init-plus [r i]
-  (->>
-   (concat (keys (dissoc r :tz)) (keys i))
-   (into #{})
-   (reduce (fn [acc k] (assoc acc k (+ (get r k 0) (get i k 0)))) {})))
+  (let [r-tz  (:tz r)
+        r-utc (to-utc r)
+        i-utc (to-utc i)]
+    (to-tz
+     (into {}
+           (map (fn [k] {k (+ (get r-utc k 0) (get i-utc k 0))}))
+           (distinct (concat (keys r-utc) (keys i-utc))))
+     r-tz)))
 
 (defn plus
   ([] default-time)
@@ -97,19 +98,84 @@
   ([x y & more]
    (reduce plus (plus x y) more)))
 
+(defn invert [x]
+  (reduce
+   (fn [x k] (cond-> x
+               (contains? x k)
+               (update k -)))
+   x
+   [:year :month :day :hour :min :sec :ms]))
+
+(defn minus
+  ([] default-time)
+  ([x] x)
+  ([x y] (normalize (init-plus x (invert y))))
+  ([x y & more]
+   (reduce minus (minus x y) more)))
+
+(defmethod to-utc
+  nil
+  [t]
+  t)
+
+(defmethod to-utc
+  Long
+  [{:keys [hour tz] :as t}]
+  (-> t
+      (dissoc :tz)
+      (minus {:hour tz})))
+
+
+(defmethod to-tz
+  nil
+  [t & _]
+  t)
+
+(defmethod to-tz
+  Long
+  [t tz]
+  (-> t
+      (plus {:hour tz})
+      (assoc :tz tz)))
+
+(defn to-normalized-utc [t]
+  (-> t
+      to-utc
+      normalize))
+
+(defn- after? [t t']
+  (loop [[[p s] & ps] defaults-units]
+    (let [t->tp #(get % p s)
+          tp (t->tp t)
+          tp' (t->tp t')]
+      (cond
+        (> tp tp') true
+        (= tp tp') (and (seq ps) (recur ps))
+        :else false))))
+
 (defn eq? [& ts]
-  (apply = (map normalize ts)))
+  (apply = (map to-normalized-utc ts)))
 
 (def not-eq? (complement eq?))
 
 (defn gt
   ([_] true)
-  ([x y] (after? x y))
+  ([x y] (after? (to-normalized-utc x) (to-normalized-utc y)))
   ([x y & more]
    (if (gt x y)
      (if (next more)
        (recur y (first more) (next more))
        (gt y (first more)))
+     false)))
+
+(defn denormalised-gt
+  ([_] true)
+  ([x y] (after? x y))
+  ([x y & more]
+   (if (denormalised-gt x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (denormalised-gt y (first more)))
      false)))
 
 (defn gte
@@ -130,23 +196,53 @@
   ([_] true)
   ([x & args] (apply (complement gt) x args)))
 
-(defn invert [x]
-  (reduce
-   (fn [x k] (cond-> x
-              (contains? x k)
-              (update k -)))
-   x
-   [:year :month :day :hour :min :sec :ms]))
-
-(defn minus
-  ([] default-time)
-  ([x] x)
-  ([x y] (normalize (init-plus x (invert y))))
-  ([x y & more]
-   (reduce minus (minus x y) more)))
+(defn denormalised-lte
+  ([_] true)
+  ([x & args] (apply (complement denormalised-gt) x args)))
 
 (defn cmp [x y]
   (cond
     (eq? x y) 0
     (gt x y)  1
     (lt x y)  -1))
+
+(defmulti day-saving "[tz y]" (fn [tz _] tz))
+
+(defmethod day-saving
+  :ny
+  [_ y]
+  (assert (> y 2006) "Not impl.")
+  {:offset 5
+   :ds -1
+   :in {:year y :month 3 :day (u/more-or-eq y 3 0 8) :hour 2 :min 0}
+   :out {:year y :month 11 :day (u/more-or-eq y 11 0 1) :hour 2 :min 0}})
+
+(defn *day-saving-with-utc [tz y]
+  (let [ds (day-saving tz y)]
+    (assoc ds
+           :in-utc (plus (:in ds) {:hour (:offset ds)})
+           :out-utc (plus (:out ds) {:hour (+ (:offset ds) (:ds ds))}))))
+
+(def day-saving-with-utc (memoize *day-saving-with-utc))
+
+(defmethod to-utc
+  clojure.lang.Keyword
+  [t]
+  (let [ds (day-saving-with-utc (:tz t) (:year t))
+        off (if (or (denormalised-lte t (:in ds)) (denormalised-gt t (:out ds)))
+              (:offset ds)
+              (+ (:offset ds) (:ds ds)))]
+    (-> t
+        (dissoc :tz)
+        (plus {:hour off}))))
+
+(defmethod to-tz
+  clojure.lang.Keyword
+  [t tz]
+  (let [ds (day-saving-with-utc tz (:year t))
+        off (if (or (denormalised-lte t (:in-utc ds)) (denormalised-gt t (:out-utc ds)))
+              (:offset ds)
+              (+ (:offset ds) (:ds ds)))]
+    (-> t
+        (plus {:hour (- off)})
+        (assoc :tz tz))))
